@@ -15,7 +15,7 @@ onMounted(() => {
   <div class="min-h-screen bg-gray-50 flex items-center justify-center">
     <div class="text-center">
       <h1 class="text-4xl font-bold mb-8 text-gray-900">
-        Across Protocol Bridge
+        Intent based interop with Kross
       </h1>
       <p class="text-gray-600 mb-8 max-w-md mx-auto">
         Bridge your assets across different test networks with ease.
