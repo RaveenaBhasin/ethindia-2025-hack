@@ -1,0 +1,13 @@
+{
+    "anvil": {
+        "numberOfChains": 5,
+        "chainwebChainIdOffset": 20,
+        "chainIdOffset": 62600
+    },
+    "testnet": {
+        "numberOfChains": 1,
+        "chainwebChainIdOffset": 20,
+        "chainIdOffset": 5920,
+        "externalHostUrl": "https://evm-testnet.chainweb.com/chainweb/0.0/evm-testnet"
+    }
+}
