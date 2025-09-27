@@ -13,4 +13,4 @@ dataworker:
   network_type: "ethereum_sepolia"
   chain_id: "11155111"
   hubpool_rpc: https://sepolia.infura.io/v3/ac886a7577c04636968626d65d02188a
-deploy_contract: true
+deploy_contract: false
