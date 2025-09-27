@@ -1,0 +1,264 @@
+import { ethers } from 'ethers';
+import { getAddress } from 'ethers';
+import 'dotenv/config';
+
+const MAINNET_RPC_URL = "https://e587d30f4ee64ee7877ae88916786263-rpc.network.dev.bloctopus.io";
+const PRIVATE_KEY = "660e5f63acf07c86cf8ef448bc68c4b754e16f2c96702acd9f61519a6337ed05";
+
+if (!PRIVATE_KEY) {
+  throw new Error('PRIVATE_KEY is not set in environment variables');
+}
+
+const provider = new ethers.JsonRpcProvider(MAINNET_RPC_URL);
+const signer = new ethers.Wallet(PRIVATE_KEY, provider);
+
+// Contract addresses on Ethereum mainnet
+const UNISWAP_V2_ROUTER_ADDRESS = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D';
+const WETH_ADDRESS = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+const USDC_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+
+// Uniswap V2 Router ABI (minimal)
+const UNISWAP_V2_ROUTER_ABI = [
+  'function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts)',
+  'function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts)',
+  'function factory() external pure returns (address)'
+];
+
+// Uniswap V2 Factory ABI (minimal)
+const UNISWAP_V2_FACTORY_ABI = [
+  'function getPair(address tokenA, address tokenB) external view returns (address pair)'
+];
+
+// Uniswap V2 Pair ABI (minimal)
+const UNISWAP_V2_PAIR_ABI = [
+  'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)',
+  'function token0() external view returns (address)',
+  'function token1() external view returns (address)'
+];
+
+// WETH ABI (minimal)
+const WETH_ABI = [
+  'function deposit() public payable',
+  'function approve(address spender, uint256 amount) public returns (bool)',
+  'function balanceOf(address account) public view returns (uint256)',
+  'function allowance(address owner, address spender) public view returns (uint256)',
+  'function transfer(address to, uint256 amount) public returns (bool)'
+];
+
+// USDC ABI (additional functions for debugging)
+const USDC_ABI_EXTRA = [
+  'function isBlacklisted(address) view returns (bool)',
+  'function paused() view returns (bool)',
+  'function balanceOf(address) view returns (uint256)'
+];
+
+async function swapETHToUSDC(amountInETH: string, minAmountOutUSDC?: string) {
+  try {
+    console.log(`Starting swap of ${amountInETH} ETH to USDC...`);
+    
+    // Convert ETH amount to wei
+    const amountIn = ethers.parseEther(amountInETH);
+    
+    // Check ETH balance first
+    const ethBalance = await provider.getBalance(await signer.getAddress());
+    console.log(`ETH balance: ${ethers.formatEther(ethBalance)} ETH`);
+    
+    // Reserve some ETH for gas fees (rough estimate: 0.01 ETH for all transactions)
+    const gasReserve = ethers.parseEther('0.01');
+    const requiredEth = amountIn + gasReserve;
+    
+    if (ethBalance < requiredEth) {
+      throw new Error(`Insufficient ETH balance. Have: ${ethers.formatEther(ethBalance)}, Need: ${ethers.formatEther(requiredEth)} (including gas)`);
+    }
+    
+    // Create contract instances
+    const weth = new ethers.Contract(WETH_ADDRESS, WETH_ABI, signer);
+    const router = new ethers.Contract(UNISWAP_V2_ROUTER_ADDRESS, UNISWAP_V2_ROUTER_ABI, signer);
+    
+    // Check initial WETH balance
+    const initialWethBalance = await weth.balanceOf(await signer.getAddress());
+    console.log(`Initial WETH balance: ${ethers.formatEther(initialWethBalance)} WETH`);
+    
+    // Step 1: Wrap ETH to WETH
+    console.log(`Wrapping ${ethers.formatEther(amountIn)} ETH to WETH...`);
+    const wrapTx = await weth.deposit({ value: amountIn });
+    console.log(`Wrap transaction hash: ${wrapTx.hash}`);
+    const wrapReceipt = await wrapTx.wait();
+    console.log(`ETH wrapped to WETH successfully. Gas used: ${wrapReceipt.gasUsed}`);
+    
+    // Step 2: Check WETH balance
+    const wethBalance = await weth.balanceOf(await signer.getAddress());
+    console.log(`WETH balance: ${ethers.formatEther(wethBalance)} WETH`);
+    
+    if (wethBalance < amountIn) {
+      throw new Error(`Insufficient WETH balance. Have: ${ethers.formatEther(wethBalance)}, Need: ${ethers.formatEther(amountIn)}`);
+    }
+    
+    // Step 3: Approve WETH for Uniswap router
+    console.log('Approving WETH for Uniswap router...');
+    const approveTx = await weth.approve(UNISWAP_V2_ROUTER_ADDRESS, amountIn);
+    console.log(`Approval transaction hash: ${approveTx.hash}`);
+    await approveTx.wait();
+    console.log('WETH approved for Uniswap router');
+    
+    // Verify approval
+    const allowance = await weth.allowance(await signer.getAddress(), UNISWAP_V2_ROUTER_ADDRESS);
+    console.log(`Router allowance: ${ethers.formatEther(allowance)} WETH`);
+    
+    if (allowance < amountIn) {
+      throw new Error(`Approval failed. Allowance: ${ethers.formatEther(allowance)}, Need: ${ethers.formatEther(amountIn)}`);
+    }
+    
+    // Step 4: Prepare swap parameters
+    const deadline = Math.floor(Date.now() / 1000) + 60 * 10; // 10 minutes from now
+    const minAmountOut = minAmountOutUSDC ? ethers.parseUnits(minAmountOutUSDC, 6) : 0; // USDC has 6 decimals
+    
+    // Define the path for the swap: WETH -> USDC
+    const path = [getAddress(WETH_ADDRESS), getAddress(USDC_ADDRESS)];
+    
+    // Check if WETH/USDC pair exists and has liquidity
+    const factoryAddress = await router.factory();
+    const factory = new ethers.Contract(factoryAddress, UNISWAP_V2_FACTORY_ABI, provider);
+    const pairAddress = await factory.getPair(WETH_ADDRESS, USDC_ADDRESS);
+    
+    console.log(`Factory address: ${factoryAddress}`);
+    console.log(`WETH/USDC pair address: ${pairAddress}`);
+    
+    if (pairAddress === '0x0000000000000000000000000000000000000000') {
+      throw new Error('WETH/USDC pair does not exist on Uniswap V2');
+    }
+    
+    // Check pair liquidity
+    const pair = new ethers.Contract(pairAddress, UNISWAP_V2_PAIR_ABI, provider);
+    const reserves = await pair.getReserves();
+    const token0 = await pair.token0();
+    const token1 = await pair.token1();
+    
+    console.log(`Token0: ${token0}, Token1: ${token1}`);
+    console.log(`Reserve0: ${reserves.reserve0}, Reserve1: ${reserves.reserve1}`);
+    
+    if (reserves.reserve0 === 0n || reserves.reserve1 === 0n) {
+      throw new Error('WETH/USDC pair has no liquidity');
+    }
+    
+    // Get expected amounts out to ensure we have realistic minimum
+    let expectedAmountOut: bigint;
+    try {
+      const amounts = await router.getAmountsOut(amountIn, path);
+      expectedAmountOut = amounts[1];
+      console.log(`Expected USDC output: ${ethers.formatUnits(expectedAmountOut, 6)} USDC`);
+    } catch (error) {
+      console.error('Failed to get amounts out:', error);
+      throw new Error('Cannot get swap quote - likely insufficient liquidity');
+    }
+    
+    // Use the provided minimum or 95% of expected amount (5% slippage tolerance)
+    const finalMinAmountOut = minAmountOut > 0 ? minAmountOut : expectedAmountOut * 95n / 100n;
+    
+    // Step 5: Final checks before swap
+    console.log('Executing swap on Uniswap V2...');
+    
+    // Double-check WETH balance and allowance right before swap
+    const finalWethBalance = await weth.balanceOf(await signer.getAddress());
+    const finalAllowance = await weth.allowance(await signer.getAddress(), UNISWAP_V2_ROUTER_ADDRESS);
+    
+    console.log(`Final WETH balance: ${ethers.formatEther(finalWethBalance)} WETH`);
+    console.log(`Final router allowance: ${ethers.formatEther(finalAllowance)} WETH`);
+    
+    if (finalWethBalance < amountIn) {
+      throw new Error(`Insufficient WETH balance for swap. Have: ${ethers.formatEther(finalWethBalance)}, Need: ${ethers.formatEther(amountIn)}`);
+    }
+    
+    if (finalAllowance < amountIn) {
+      throw new Error(`Insufficient allowance for swap. Have: ${ethers.formatEther(finalAllowance)}, Need: ${ethers.formatEther(amountIn)}`);
+    }
+    
+    // Test if we can even transfer WETH to the router (simulate what Uniswap does)
+    console.log('Testing WETH transfer to router...');
+    try {
+      await weth.transfer.estimateGas(UNISWAP_V2_ROUTER_ADDRESS, amountIn);
+      console.log('WETH transfer gas estimation successful');
+    } catch (transferError) {
+      console.error('WETH transfer would fail:', transferError);
+      throw new Error(`Cannot transfer WETH to router: ${transferError.message || transferError}`);
+    }
+    
+    // Check USDC status and balances
+    console.log('Checking USDC contract status...');
+    const usdc = new ethers.Contract(USDC_ADDRESS, [...WETH_ABI, ...USDC_ABI_EXTRA], provider);
+    
+    const to = await signer.getAddress();
+    console.log('USDC paused?:', await usdc.paused().catch(()=>false));
+    console.log('USDC isBlacklisted(to)?:', await usdc.isBlacklisted(to).catch(()=>false));
+    
+    const pairUsdcBal = await usdc.balanceOf('0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc');
+    console.log('USDC balance of pair:', pairUsdcBal.toString());
+    
+    console.log(`Swap parameters:`);
+    console.log(`  AmountIn: ${ethers.formatEther(amountIn)} WETH`);
+    console.log(`  MinAmountOut: ${ethers.formatUnits(finalMinAmountOut, 6)} USDC`);
+    console.log(`  Path: [${path.join(', ')}]`);
+    console.log(`  To: ${await signer.getAddress()}`);
+    console.log(`  Deadline: ${deadline} (${new Date(deadline * 1000).toISOString()})`);
+    
+    // Estimate gas first
+    try {
+      const gasEstimate = await router.swapExactTokensForTokens.estimateGas(
+        amountIn,
+        finalMinAmountOut,
+        path,
+        await signer.getAddress(),
+        deadline
+      );
+      console.log(`Estimated gas: ${gasEstimate}`);
+    } catch (gasError) {
+      console.error('Gas estimation failed:', gasError);
+      throw new Error(`Swap would fail. Gas estimation error: ${gasError.message || gasError}`);
+    }
+    
+    const swapTx = await router.swapExactTokensForTokens(
+      amountIn,
+      finalMinAmountOut,
+      path,
+      await signer.getAddress(),
+      deadline
+    );
+    console.log(`Swap transaction hash: ${swapTx.hash}`);
+    
+    const receipt = await swapTx.wait();
+    console.log('Swap completed successfully!');
+    
+    // Parse the swap result from logs (simplified)
+    console.log(`Transaction confirmed in block: ${receipt.blockNumber}`);
+    console.log(`Gas used: ${receipt.gasUsed.toString()}`);
+    
+    return {
+      success: true,
+      transactionHash: swapTx.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString()
+    };
+    
+  } catch (error) {
+    console.error('Error during swap:', error);
+    throw error;
+  }
+}
+
+// Example usage
+// if (require.main === module) {
+//   const args = process.argv.slice(2);
+  const ethAmount = '0.01'; // Default to 0.01 ETH
+  const minUsdcAmount = '0'; // Optional minimum USDC output
+  
+  swapETHToUSDC(ethAmount, minUsdcAmount)
+    .then((result) => {
+      console.log('Swap result:', result);
+    })
+    .catch((error) => {
+      console.error('Swap failed:', error);
+      process.exit(1);
+    });
+// }
+
+// export { swapETHToUSDC };
