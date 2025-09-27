@@ -1,0 +1,16 @@
+networks:
+  - name: "Ethereum Sepolia"
+    type: "ethereum_sepolia"
+    chain_id: "11155111"
+    rpc: https://sepolia.infura.io/v3/ac886a7577c04636968626d65d02188a
+    private_key: 0x27816b667cf972e25802edd470c09b2c13fbd152c9371117e2b5c29fdf0f30c3
+  - name: "Kadena Testnet"
+    type: "kadena_testnet"
+    chain_id: "5920"
+    rpc: https://evm-testnet.chainweb.com/chainweb/0.0/evm-testnet/chain/20/evm/rpc
+    private_key: 0x27816b667cf972e25802edd470c09b2c13fbd152c9371117e2b5c29fdf0f30c3
+dataworker:
+  network_type: "ethereum_sepolia"
+  chain_id: "11155111"
+  hubpool_rpc: https://sepolia.infura.io/v3/ac886a7577c04636968626d65d02188a
+deploy_contract: true
